@@ -30,7 +30,6 @@ use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::arrow::{
     PARQUET_FIELD_ID_META_KEY, ParquetRecordBatchStreamBuilder, ProjectionMask, RowNumber,
 };
-use parquet::encryption::decrypt::FileDecryptionProperties;
 
 use super::row_lineage::synthesize_row_id_column;
 use super::{
@@ -745,27 +744,12 @@ impl ArrowReader {
     /// Builds `ArrowReaderOptions`, adding `FileDecryptionProperties` when
     /// key metadata is present for Parquet Modular Encryption.
     fn build_arrow_reader_options(key_metadata: Option<&[u8]>) -> Result<ArrowReaderOptions> {
+        // See `resolve_writer_properties` in the Parquet writer.
         match key_metadata {
-            Some(km) => {
-                let standard_key_metadata = StandardKeyMetadata::decode(km)?;
-                let mut builder = FileDecryptionProperties::builder(
-                    standard_key_metadata.encryption_key().as_bytes().to_vec(),
-                );
-                if let Some(aad) = standard_key_metadata.aad_prefix() {
-                    builder = builder.with_aad_prefix(aad.to_vec());
-                }
-                let decryption_properties = builder.build().map_err(|e| {
-                    Error::new(
-                        ErrorKind::Unexpected,
-                        "Failed to build Parquet file decryption properties",
-                    )
-                    .with_source(e)
-                })?;
-                Ok(
-                    ArrowReaderOptions::new()
-                        .with_file_decryption_properties(decryption_properties),
-                )
-            }
+            Some(_) => Err(Error::new(
+                ErrorKind::FeatureUnsupported,
+                "Parquet Modular Encryption is not built for this target",
+            )),
             None => Ok(ArrowReaderOptions::default()),
         }
     }

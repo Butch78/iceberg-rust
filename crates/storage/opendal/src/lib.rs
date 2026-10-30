@@ -25,6 +25,11 @@
 mod utils;
 
 use std::collections::HashMap;
+use std::future::IntoFuture;
+
+/// An opendal value or future asserted `Send`: opendal is `MaybeSend` on wasm32, where the one
+/// runtime is single-threaded, and the traits here require `Send`.
+use send_wrapper::SendWrapper as S;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
@@ -514,12 +519,18 @@ impl OpenDalStorage {
 impl Storage for OpenDalStorage {
     async fn exists(&self, path: &str) -> Result<bool> {
         let (op, relative_path) = self.create_operator(&path)?;
-        Ok(op.exists(relative_path).await.map_err(from_opendal_error)?)
+        let op = S::new(op);
+        Ok(S::new(op.exists(relative_path).into_future())
+            .await
+            .map_err(from_opendal_error)?)
     }
 
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let (op, relative_path) = self.create_operator(&path)?;
-        let meta = op.stat(relative_path).await.map_err(from_opendal_error)?;
+        let op = S::new(op);
+        let meta = S::new(op.stat(relative_path).into_future())
+            .await
+            .map_err(from_opendal_error)?;
         Ok(FileMetadata {
             size: meta.content_length(),
         })
@@ -527,8 +538,8 @@ impl Storage for OpenDalStorage {
 
     async fn read(&self, path: &str) -> Result<Bytes> {
         let (op, relative_path) = self.create_operator(&path)?;
-        Ok(op
-            .read(relative_path)
+        let op = S::new(op);
+        Ok(S::new(op.read(relative_path).into_future())
             .await
             .map_err(from_opendal_error)?
             .to_bytes())
@@ -536,14 +547,18 @@ impl Storage for OpenDalStorage {
 
     async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
         let (op, relative_path) = self.create_operator(&path)?;
-        Ok(Box::new(OpenDalReader(
-            op.reader(relative_path).await.map_err(from_opendal_error)?,
-        )))
+        let op = S::new(op);
+        Ok(Box::new(OpenDalReader(S::new(
+            S::new(op.reader(relative_path).into_future())
+                .await
+                .map_err(from_opendal_error)?,
+        ))))
     }
 
     async fn write(&self, path: &str, bs: Bytes) -> Result<()> {
         let (op, relative_path) = self.create_operator(&path)?;
-        op.write(relative_path, bs)
+        let op = S::new(op);
+        S::new(op.write(relative_path, bs).into_future())
             .await
             .map_err(from_opendal_error)?;
         Ok(())
@@ -551,14 +566,20 @@ impl Storage for OpenDalStorage {
 
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
         let (op, relative_path) = self.create_operator(&path)?;
+        let op = S::new(op);
         Ok(Box::new(OpenDalWriter::new(
-            op.writer(relative_path).await.map_err(from_opendal_error)?,
+            S::new(op.writer(relative_path).into_future())
+                .await
+                .map_err(from_opendal_error)?,
         )))
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
         let (op, relative_path) = self.create_operator(&path)?;
-        Ok(op.delete(relative_path).await.map_err(from_opendal_error)?)
+        let op = S::new(op);
+        Ok(S::new(op.delete(relative_path).into_future())
+            .await
+            .map_err(from_opendal_error)?)
     }
 
     async fn delete_prefix(&self, path: &str) -> Result<()> {
@@ -568,15 +589,14 @@ impl Storage for OpenDalStorage {
         } else {
             format!("{relative_path}/")
         };
-        Ok(op
-            .delete_with(&path)
-            .recursive(true)
+        let op = S::new(op);
+        Ok(S::new(op.delete_with(&path).recursive(true).into_future())
             .await
             .map_err(from_opendal_error)?)
     }
 
     async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> Result<()> {
-        let mut deleters: HashMap<String, opendal::Deleter> = HashMap::new();
+        let mut deleters: HashMap<String, S<opendal::Deleter>> = HashMap::new();
 
         while let Some(path) = paths.next().await {
             let bucket = self.batch_key_for_path(&path);
@@ -588,19 +608,23 @@ impl Storage for OpenDalStorage {
                 Entry::Vacant(entry) => {
                     let (op, rel) = self.create_operator(&path)?;
                     let rel = rel.to_string();
-                    let deleter = op.deleter().await.map_err(from_opendal_error)?;
-                    (rel, entry.insert(deleter))
+                    let op = S::new(op);
+                    let deleter = S::new(op.deleter().into_future())
+                        .await
+                        .map_err(from_opendal_error)?;
+                    (rel, entry.insert(S::new(deleter)))
                 }
             };
 
-            deleter
-                .delete(relative_path)
+            S::new(deleter.delete(relative_path).into_future())
                 .await
                 .map_err(from_opendal_error)?;
         }
 
         for (_, mut deleter) in deleters {
-            deleter.close().await.map_err(from_opendal_error)?;
+            S::new(deleter.close().into_future())
+                .await
+                .map_err(from_opendal_error)?;
         }
 
         Ok(())
@@ -622,12 +646,12 @@ impl Storage for OpenDalStorage {
 // Reader/Writer since neither trait nor type is defined in this crate.
 
 /// Wrapper around `opendal::Reader` that implements `FileRead`.
-pub(crate) struct OpenDalReader(pub(crate) opendal::Reader);
+pub(crate) struct OpenDalReader(pub(crate) S<opendal::Reader>);
 
 #[async_trait]
 impl FileRead for OpenDalReader {
     async fn read(&self, range: std::ops::Range<u64>) -> Result<Bytes> {
-        Ok(opendal::Reader::read(&self.0, range)
+        Ok(S::new(opendal::Reader::read(&self.0, range).into_future())
             .await
             .map_err(from_opendal_error)?
             .to_bytes())
@@ -636,14 +660,14 @@ impl FileRead for OpenDalReader {
 
 /// Wrapper around `opendal::Writer` that implements `FileWrite`.
 pub(crate) struct OpenDalWriter {
-    inner: opendal::Writer,
+    inner: S<opendal::Writer>,
     bytes_written: u64,
 }
 
 impl OpenDalWriter {
     pub(crate) fn new(inner: opendal::Writer) -> Self {
         Self {
-            inner,
+            inner: S::new(inner),
             bytes_written: 0,
         }
     }
@@ -653,7 +677,7 @@ impl OpenDalWriter {
 impl FileWrite for OpenDalWriter {
     async fn write(&mut self, bs: Bytes) -> Result<()> {
         let len = bs.len() as u64;
-        opendal::Writer::write(&mut self.inner, bs)
+        S::new(opendal::Writer::write(&mut self.inner, bs).into_future())
             .await
             .map_err(from_opendal_error)?;
         self.bytes_written += len;
@@ -661,7 +685,7 @@ impl FileWrite for OpenDalWriter {
     }
 
     async fn close(&mut self) -> Result<FileMetadata> {
-        let metadata = opendal::Writer::close(&mut self.inner)
+        let metadata = S::new(opendal::Writer::close(&mut self.inner).into_future())
             .await
             .map_err(from_opendal_error)?;
 

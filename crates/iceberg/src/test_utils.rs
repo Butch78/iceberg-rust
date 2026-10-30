@@ -47,7 +47,7 @@ use crate::table::Table;
 pub fn test_runtime() -> Runtime {
     static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     let tokio_rt = TOKIO_RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to build test tokio runtime")

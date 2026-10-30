@@ -28,7 +28,6 @@ use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::async_writer::AsyncFileWriter as ArrowAsyncFileWriter;
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
-use parquet::encryption::encrypt::FileEncryptionProperties;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::properties::{CdcOptions, WriterProperties};
 use parquet::file::statistics::Statistics;
@@ -586,34 +585,15 @@ fn resolve_writer_properties(
     writer_properties: WriterProperties,
     key_metadata: Option<&StandardKeyMetadata>,
 ) -> Result<WriterProperties> {
-    let Some(key_metadata) = key_metadata else {
-        return Ok(writer_properties);
-    };
-
-    if writer_properties.file_encryption_properties().is_some() {
-        return Err(Error::new(
-            ErrorKind::Unexpected,
-            "Parquet writer properties already have file encryption properties set",
-        ));
+    // Parquet Modular Encryption needs ring's SystemRandom, which has no
+    // wasm32-unknown-emscripten backend; an encrypted table is refused instead.
+    match key_metadata {
+        None => Ok(writer_properties),
+        Some(_) => Err(Error::new(
+            ErrorKind::FeatureUnsupported,
+            "Parquet Modular Encryption is not built for this target",
+        )),
     }
-
-    let mut builder =
-        FileEncryptionProperties::builder(key_metadata.encryption_key().as_bytes().to_vec());
-    if let Some(aad) = key_metadata.aad_prefix() {
-        builder = builder.with_aad_prefix(aad.to_vec());
-    }
-    let file_encryption_properties = builder.build().map_err(|e| {
-        Error::new(
-            ErrorKind::Unexpected,
-            "Failed to build parquet file encryption properties",
-        )
-        .with_source(e)
-    })?;
-
-    Ok(writer_properties
-        .into_builder()
-        .with_file_encryption_properties(file_encryption_properties)
-        .build())
 }
 
 impl FileWriter for ParquetWriter {

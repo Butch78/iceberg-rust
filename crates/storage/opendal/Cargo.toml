@@ -55,6 +55,8 @@ cfg-if = { workspace = true }
 futures = { workspace = true }
 iceberg = { workspace = true }
 opendal = { workspace = true }
+# opendal's futures are `MaybeSend` (nothing) on wasm32; the single-threaded runtime there lets them be asserted `Send`.
+send_wrapper = { version = "0.6", features = ["futures"] }
 reqsign-aws-v4 = { version = "3.0.0", optional = true }
 reqsign-core = { version = "3.0.0", optional = true }
 serde = { workspace = true }
