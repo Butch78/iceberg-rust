@@ -29,7 +29,54 @@ use std::future::IntoFuture;
 
 /// An opendal value or future asserted `Send`: opendal is `MaybeSend` on wasm32, where the one
 /// runtime is single-threaded, and the traits here require `Send`.
+#[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper as S;
+/// Off wasm32 opendal's futures and handles are `Send` already and the runtime may move them
+/// between threads, which `SendWrapper` would panic on: the wrapper is a pass-through there.
+#[cfg(not(target_arch = "wasm32"))]
+use passthrough::S;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod passthrough {
+    use std::future::Future;
+    use std::ops::{Deref, DerefMut};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    pin_project_lite::pin_project! {
+        /// The value as it is, with `SendWrapper`'s shape: `new`, deref, and a future when it is one.
+        pub(crate) struct S<T> {
+            #[pin]
+            inner: T,
+        }
+    }
+
+    impl<T> S<T> {
+        pub(crate) fn new(inner: T) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl<T> Deref for S<T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.inner
+        }
+    }
+
+    impl<T> DerefMut for S<T> {
+        fn deref_mut(&mut self) -> &mut T {
+            &mut self.inner
+        }
+    }
+
+    impl<F: Future> Future for S<F> {
+        type Output = F::Output;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+            self.project().inner.poll(cx)
+        }
+    }
+}
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
